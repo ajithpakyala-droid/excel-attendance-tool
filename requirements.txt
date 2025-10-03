@@ -1,0 +1,6 @@
+streamlit
+pandas
+databricks-sdk
+plotly
+xlsxwriter
+numpy
