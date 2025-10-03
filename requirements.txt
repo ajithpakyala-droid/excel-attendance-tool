@@ -3,4 +3,5 @@ pandas
 databricks-sdk
 plotly
 xlsxwriter
+openpyxl
 numpy
