@@ -91,25 +91,30 @@ def upload_csv_bytes_to_volume(ws: WorkspaceClient, csv_bytes: bytes, volume_pat
     if not hasattr(ws, "files") or not hasattr(ws.files, "upload"):
         raise RuntimeError("WorkspaceClient.files.upload not available in this SDK instance")
 
+    # Convert bytes to a file-like object (BytesIO)
+    file_like = io.BytesIO(csv_bytes)
+    
     # Try keyword
     try:
-        ws.files.upload(path=volume_path, content=csv_bytes, overwrite=True)
+        ws.files.upload(path=volume_path, content=file_like, overwrite=True)
         return
     except TypeError:
-        pass
+        file_like.seek(0)  # Reset position for next attempt
     except Exception as e:
         st.warning(f"Upload attempt (keyword) failed: {e}")
+        file_like.seek(0)  # Reset position for next attempt
 
     # Try positional
     try:
-        ws.files.upload(volume_path, csv_bytes, overwrite=True)
+        ws.files.upload(volume_path, file_like, overwrite=True)
         return
     except Exception as e:
         st.warning(f"Upload attempt (positional) failed: {e}")
+        file_like.seek(0)  # Reset position for next attempt
 
     # Try minimal positional
     try:
-        ws.files.upload(volume_path, csv_bytes)
+        ws.files.upload(volume_path, file_like)
         return
     except Exception as e:
         raise RuntimeError(f"All upload attempts failed for path={volume_path}. Error: {e}") from e
@@ -118,22 +123,22 @@ def _poll_statement_until_ready(ws: WorkspaceClient, resp, timeout_s: int = 60):
     """Poll a Databricks statement until result is available or timeout."""
     sid = None
     start = time.time()
+    last_error_time = [0]  # Use list to allow modification in nested scope
+    
     while getattr(resp, "result", None) is None and getattr(resp, "manifest", None) is None:
         if time.time() - start > timeout_s:
             break
         time.sleep(0.5)
-        st.info(f"resp : {resp}")
         sid = getattr(resp, "statement_id", None) or getattr(resp, "id", None)
-        # if sid:
-        #     break
+        
     if sid and hasattr(ws.statement_execution, "get"):
         try:
             resp = ws.statement_execution.get(statement_id=sid)
-        except Exception:
+        except Exception as e:
             current_time = time.time()
-            if current_time - last_error_time > 5: # Show error max once every 5s
+            if current_time - last_error_time[0] > 5:
                 st.warning(f"Polling status check failed: {e}. Retrying...")
-                last_error_time = current_time
+                last_error_time[0] = current_time
     return resp
 
 
@@ -886,8 +891,11 @@ if uploaded_files:
                     # The return variable is now csv_bytes for clarity
                     result_df, csv_bytes = run_full_pipeline(file) 
                     
-                    start_date_str = result_df['work_date'].min() if not result_df.empty else datetime.date.today().strftime('%Y-%m-%d')
-                    start_date = pd.to_datetime(start_date_str).strftime('%Y-%m-%d')
+                    # ✅ FIXED: Proper date handling with safety checks
+                    if not result_df.empty and 'work_date' in result_df.columns:
+                        start_date = pd.to_datetime(result_df['work_date'].min()).strftime('%Y-%m-%d')
+                    else:
+                        start_date = datetime.date.today().strftime('%Y-%m-%d')
                     
                     # The output name now correctly uses the .csv extension
                     output_name = f"attendance_report_{start_date}.csv" 
@@ -912,8 +920,6 @@ if uploaded_files:
                 mime="text/csv",
                 key=f"download_{name}",
             )
-    if not run_now:
-        st.info("Using previously processed multi-file results.")
 
     if st.session_state.get("pipeline_ran", False) and not run_now:
         st.info("Using previously run pipeline result.")
